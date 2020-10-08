@@ -1,0 +1,672 @@
+---
+title: "Lens Clock Cortex Simulation"
+author: "Ben Davies and Matt Douglass"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+##Step 1: Load packages and data
+1A: Load packages
+```{r}
+require(tidyverse)
+require(ggExtra)
+require(gridExtra)
+require(cowplot)
+require(gtable)
+require(gridExtra)
+```
+
+
+1B: Load the data. This data corresponds to experimental reduction sets described in Douglass et al. (2020)
+```{r}
+#Lightly reduced quartz (LRQ) and heavily reduced quartz (HRQ)
+#Cobble attributes
+lrq_cobbles<-read.csv("lrq_cobbles.csv",stringsAsFactors = FALSE)
+hrq_cobbles<-read.csv("hrq_cobbles.csv",stringsAsFactors = FALSE)
+
+#Fragment attributes
+lrq_frag<-read.csv("lrq_fragments.csv",stringsAsFactors = FALSE)
+hrq_frag<-read.csv("hrq_fragments.csv",stringsAsFactors = FALSE)
+
+#S values by nodule
+lrq_whole<-read.csv("lrq_s_whole.csv",stringsAsFactors = FALSE)
+hrq_whole<-read.csv("hrq_s_whole.csv",stringsAsFactors = FALSE)
+
+#S values by fragment 
+lrq_frag_s<-read.csv("lrq_s_fragments.csv",stringsAsFactors = FALSE)
+hrq_frag_s<-read.csv("hrq_s_fragments.csv",stringsAsFactors = FALSE)
+```
+
+## Step 2: Functions 
+2A: Function to bootstrap sample from experimental datasets
+```{r}
+#Function to bootstrap sample from experimental datasets
+#data = dataframe of values from s2_frag
+#size = integer, number of fragments to include in assemblage (default 10000)
+#augment = Either "no", "add", "remove"
+#percent = floating point value between 0 and 1
+#criteria = Either "none", length", "flake_only", "flake_long", or "cortical"
+makeAssemblage<-function(data,size,augment,percent,criteria){
+  cobbles<-sort(unique(data[,2])) #get unique original cobble numbers
+  start_cob<-sample(cobbles,1)  #pick a random first cobble
+  assemblage<-subset(data,CobbleID == start_cob) #start simulated assemblage using products from first cobble
+  while (length(assemblage[,1])<size){ #repeat (with replacement) until assemblage is of desired size
+    add_cob<-sample(cobbles,1)
+    assemblage<-rbind(assemblage,subset(data,CobbleID == add_cob))
+  }
+  if (percent > 0){
+  if (augment == "add"){ #if the assemblage is to be added to
+    add_num<-round(percent*size) #determine what that is based on the initial size
+    if (criteria == "none") { #if there is no selection criteria...
+      adds<-sample(c(1:length(assemblage[,1])),add_num,replace = TRUE) #select random row numbers
+      adds<-assemblage[adds,]
+      assemblage<-rbind(assemblage,adds) #append them
+    }
+    if (criteria == "length") { #if selecting by overall length...
+      assemblage<-assemblage[order(assemblage$Length,decreasing = TRUE),] #order by decreasing length
+      adds<-assemblage[1:add_num,] #subset the topmost to the add number
+      assemblage<-rbind(assemblage,adds) #append them
+    }
+    if (criteria == "flake_only") { #if selecting only flakes...
+      flakes<-which(assemblage$FlakeClass == "flake") #determine which rows have flakes
+      smp<-sample(flakes,add_num,replace = TRUE) #select random flake rows
+      adds<-assemblage[smp,] #create a subset offlakes
+      assemblage<-rbind(assemblage,adds) #append them
+    }
+    if (criteria == "flake_long") { #if selecting only flakes...
+      cores<-which(assemblage$FlakeClass == "core") #determine which rows have flakes
+      cores_add<-assemblage[cores,] #find all the cores
+      assemblage<-assemblage[-cores,] #remove them
+      assemblage<-assemblage[order(assemblage$Length,decreasing = TRUE),] #order by decreasing length
+      adds<-assemblage[1:add_num,]#subset the topmost to the add number
+      assemblage<-rbind(assemblage,adds) #append them
+      assemblage<-rbind(assemblage,cores_add) #reappend the cores
+    }
+    if (criteria == "cortical") { #if selecting by maximum cortical surface
+      assemblage<-assemblage[order(assemblage$CSA,decreasing = TRUE),] #order by decreasing CSA
+      adds<-assemblage[1:add_num,]#subset the topmost to the add number
+      assemblage<-rbind(assemblage,adds) #append them
+    }
+    if (criteria == "volume") { #if selecting by maximum cortical surface
+      assemblage<-assemblage[order(assemblage$Volume,decreasing = TRUE),] #order by decreasing Volume
+      adds<-assemblage[1:add_num,]#subset the topmost to the add number
+      assemblage<-rbind(assemblage,adds) #append them
+    }
+    if (criteria == "surfvol") { #if selecting by maximum cortical surface
+      assemblage$surfvol<-assemblage$SurfaceArea/assemblage$Volume
+      assemblage<-assemblage[order(assemblage$surfvol,decreasing = TRUE),]
+      adds<-assemblage[1:add_num,] #subset the topmost to the add number
+      assemblage<-rbind(assemblage,adds) #append them
+    }
+  }
+  
+  if (augment == "remove"){ #if there is some removal amount
+    remove_num<-round(percent*size) #determine what that is based on the initial size
+    if (criteria == "none") { #if there is no selection criteria...
+      removals<-sample(c(1:length(assemblage[,1])),remove_num,replace = FALSE) #select random rows
+      assemblage<-assemblage[-removals,] #remove them
+    }
+    if (criteria == "length") { #if selecting by overall length...
+      assemblage<-assemblage[order(assemblage$Length,decreasing = TRUE),] #order by decreasing length
+      assemblage<-assemblage[remove_num:length(assemblage[,1]),] #remove topmost to the removal number
+    }
+    if (criteria == "flake_only") { #if selecting only flakes...
+      flakes<-which(assemblage$FlakeClass == "flake") #determine which rows have flakes
+      removals<-sample(flakes,remove_num,replace = FALSE) #select random flake rows
+      assemblage<-assemblage[-removals,] #remove them
+    }
+    if (criteria == "flake_long") { #if selecting only flakes...
+      cores<-which(assemblage$FlakeClass == "core") #determine which rows have flakes
+      cores_add<-assemblage[cores,]
+      assemblage<-assemblage[-cores,]
+      assemblage<-assemblage[order(assemblage$Length,decreasing = TRUE),] #order by decreasing length
+      assemblage<-assemblage[remove_num:length(assemblage[,1]),]
+      assemblage<-rbind(assemblage,cores_add)
+    }
+    if (criteria == "cortical") { #if selecting by maximum cortical surface
+      assemblage<-assemblage[order(assemblage$CSA,decreasing = TRUE),] #order by decreasing CSA
+      assemblage<-assemblage[remove_num:length(assemblage[,1]),] #remove topmost to the removal number
+    }
+      if (criteria == "volume") { #if selecting by maximum cortical surface
+      assemblage<-assemblage[order(assemblage$Volume,decreasing = TRUE),] #order by decreasing Volume
+      assemblage<-assemblage[remove_num:length(assemblage[,1]),] #remove topmost to the removal number
+    }
+    if (criteria == "surfvol") { #if selecting by maximum cortical surface
+      assemblage$surfvol<-assemblage$SurfaceArea/assemblage$Volume
+      assemblage<-assemblage[order(assemblage$surfvol,decreasing = TRUE),] #order by decreasing CSA
+      assemblage<-assemblage[remove_num:length(assemblage[,1]),] #remove topmost to the removal number
+    }
+  }
+  }
+  
+  assemblage #report the resulant assemblage as dataframe
+}
+```
+
+2B: Function to get an average S value from lens clock readings
+```{r}
+#Function to get an average S value from lens clock readings
+#data = dataframe of fragment characteristics from 2A
+#s_reads = dataframe of corresponding fragment lens clock readings from s2_frag_s
+#readings = integer, number of fragments to use in mean S calculation (default 100)
+assemblageS<-function(data,s_reads,readings){
+  vals<-data$UNID #Get all IDs from the individual artifacts in the simulated assemblage
+  uvals<-sort(unique(vals)) #Get the unique ID numbers from the same artifacts
+  counts<-as.numeric(table(vals)) #get the count of each instance of the unique IDs
+  svals<-c() #empty list to record lens clock readings from sampled artifacts
+  for (i in c(1:length(uvals))){ #for each entry in the unique values...
+    sv<-subset(s_reads,UNID == uvals[i]) #subset the s readings data for that artifact
+    svals<-append(svals,rep(sv$S,counts[i])) #append s readings to the list
+  }
+  if (length(svals)>=readings){
+  reads<-sample(svals,readings,replace = FALSE) #sample the list from the number of readings
+  }
+  else {
+    reads<-sample(svals,readings,replace = TRUE) #sample the list from the number of readings
+  }
+  S<-mean(reads) #take the mean of the sample
+  Y<-s_reads[1,5] 
+  c(S,Y) #report vector containing S and Y
+}
+```
+
+2C: Function to calculate theoretical nodule radius, surface area, and volume from S value
+```{r}
+#Function to calculate theoretical nodule radius, surface area, and volume from S value
+#data = dataframe of fragment characteristics from 2A
+#sy = Vector of S and Y values obtained from 2B
+theo_nod<-function(sy){
+  r<-(sy[2]^2)/(2*sy[1])+(sy[1]/2) #calculate theoretical nodule radius from S and Y
+  theo_sa<-4*pi*r^2 #calculate theoretical nodule surface area
+  theo_vol<-((4/3)*pi*r^3)/1000 #calculate theoreitical nodule volume
+  c(r,theo_sa,theo_vol) #report vector of theoretical radius, surface area, and volume
+}
+```
+
+2D: Function to extract averge nodule radius, surface area, and volume for generated assemblages using axial and curvature derived dimensions
+```{r}
+#Function to extract average nodule radius, surface area, and volume for generated assemblages
+#data = dataframe of fragment characteristics from 2A
+#cobbles = dataframe of cobble characteristics s2_cobbles
+
+#Using axial dimensions
+nod_char<-function(data,cobbles){
+  vals<-data$CobbleID #Get all IDs from the individual cobblesin the simulated assemblage
+  uvals<-sort(unique(vals)) #Get the unique ID numbers from the same artifacts
+  counts<-as.numeric(table(vals)) #Get counts of each ID number
+  a_rads<-c() #Empty list to record cobble radii
+  a_sas<-c() #Empty list to record cobble surface areas
+  a_vols<-c() #Empty list to record cobble volumes
+  j<-1 #Iteration counter
+  for (i in uvals){ #for each entry in the unique values...
+    #sub<-subset(cobbles,CobbleID == uvals[i]) #subset the s readings data for that artifact
+    a_rads<-append(a_rads,rep(cobbles[i,9],counts[j])) #add radii to 
+    a_sas<-append(a_sas,rep(cobbles[i,17],counts[j]))#append s readings to the list
+    a_vols<-append(a_vols,rep((((4/3)*pi*cobbles[i,9]^3)/1000),counts[j]))
+    j<-j+1 #Update counter
+  }
+  c(mean(a_rads),mean(a_sas),mean(a_vols))
+}
+
+#Using curvature-derived dimensions
+nod_char_s<-function(data,cobbles){
+  vals<-data$CobbleID #Get all IDs from the individual cobblesin the simulated assemblage
+  uvals<-sort(unique(vals)) #Get the unique ID numbers from the same artifacts
+  counts<-as.numeric(table(vals)) #Get counts of each ID number
+  a_rads<-c() #Empty list to record cobble radii
+  a_sas<-c() #Empty list to record cobble surface areas
+  a_vols<-c() #Empty list to record cobble volumes
+  j<-1 #Iteration counter
+  for (i in uvals){ #for each entry in the unique values...
+    #sub<-subset(cobbles,CobbleID == uvals[i]) #subset the s readings data for that artifact
+    a_rads<-append(a_rads,rep(cobbles[i,13],counts[j])) #add radii to 
+    a_sas<-append(a_sas,rep(cobbles[i,18],counts[j]))#append s readings to the list
+    a_vols<-append(a_vols,rep((((4/3)*pi*cobbles[i,13]^3)/1000),counts[j]))
+    j<-j+1 #Update counter
+  }
+  c(mean(a_rads),mean(a_sas),mean(a_vols))
+}
+
+```
+
+2E: Function to calculate cortex ratios from S value
+```{r}
+#Function to calculate cortex ratios from S value
+#data = dataframe of fragment characteristics from 2A
+#sy = Vector of S and Y values obtained from 2B
+cortexratioS<-function(data,sy){
+  assem_csa<-sum(data[,11]) #Get sum of cortical surface area from simulated assemblage
+  assem_vol<-sum(data[,14]) #Get sum of volume from simulated assemblage
+  r<-(sy[2]^2)/(2*sy[1])+(sy[1]/2) #calculate theoretical nodule radius from S and Y
+  theo_sa<-4*pi*r^2 #calculate theoretical nodule surface area
+  theo_vol<-((4/3)*pi*r^3)/1000 #calculate theoreitical nodule volume
+  exp_csa<-(assem_vol/theo_vol) * theo_sa #get expected cortical surface area
+  assem_csa/exp_csa #report cortex ratio
+}
+```
+
+2F: Function to extract legend from sinlge plot to use in multiplot
+```{r}
+get_legend<-function(myggplot){
+  tmp <- ggplot_gtable(ggplot_build(myggplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)
+}
+```
+
+
+##STEP 3: Assess theoretical original nodule
+
+3A: Compare assemblage S radius to cobble axial radius
+```{r}
+#LRQ
+frag_nums<-c(10,50,100) #number of fragments to use in comparison (n)
+vals<-lrq_frag$CobbleID #all cobble IDs
+cobbles<-unique(lrq_frag_s$COBBLE_ID) #unique cobble ids
+counts<-as.numeric(table(vals)) #counts of each cobble in assemblage
+assemblage_size<-10000 #size of the initial 
+augment<-"no"
+select_criteria<-"none"
+select_percent<-c(0)
+
+sim<-c() #Empty vector for recording simulated theoretical nodule radii
+real<-c() #Empty vector for recording axial theoretical nodule radii
+cr<-c() #Empty vector for recording cortex ratios
+fr<-c() #Empty vector for recording fragment number (n)
+criteria<-c() #Empty vector for recording cortex ratios
+perc<-c() #Empty vector for recording the selection percentages
+aug<-c() #Empty vector for recording whether the assemblage is added to or subtracted from
+
+for (m in select_percent){ #For each selection percentage
+  for (n in select_criteria){ #For each selection criteria
+    for (i in frag_nums){ #For each number of fragments
+      
+      for (j in c(1:100)){
+        data<-makeAssemblage(lrq_frag,assemblage_size,augment,m,n)
+        sy<-assemblageS(data,lrq_frag_s,i)
+        theo<-theo_nod(sy)
+        nod<-nod_char(data,lrq_cobbles)
+        sim<-append(sim,theo[1])
+        real<-append(real,nod[1])
+        cr<-append(cr,cortexratioS(data,sy))
+        fr<-append(fr,i)
+        perc<-append(perc,m)
+        aug<-append(aug,augment)
+        criteria<-append(criteria,select_criteria)
+      }
+    }
+  }
+}
+
+diffs<-sim/real
+v2<-tibble(aug,select_criteria,perc,fr,diffs,cr)
+
+# Scatterplot
+theme_set(theme_bw())  # pre-set the bw theme.
+
+#make plot
+f2<-ggplot(v2, aes(x=diffs)) + 
+  geom_histogram(binwidth=.05, colour="black", fill="white") + 
+  facet_grid(factor(fr) ~ .) +
+  geom_vline(data=v2, aes(xintercept=1),linetype="dashed", size=1) +
+ labs(title="Lightly Reduced Quartz",x = "",y="") +
+  xlim(0,3) +
+  ylim(0,41) +
+  scale_y_continuous(breaks=c(0,20,40),labels=c("0", "20", "40"))+
+ theme(plot.title = element_text(hjust = 0.5,size=8))
+
+#HRQ
+frag_nums<-c(10,50,100) #number of fragments to use in comparison (n)
+vals<-hrq_frag$CobbleID #all cobble IDs
+cobbles<-unique(hrq_frag_s$COBBLE_ID) #unique cobble ids
+counts<-as.numeric(table(vals)) #counts of each cobble in assemblage
+assemblage_size<-10000 #size of the initial 
+augment<-"no"
+select_criteria<-"none"
+select_percent<-c(0)
+
+sim<-c() #Empty vector for recording simulated theoretical nodule radii
+real<-c() #Empty vector for recording axial theoretical nodule radii
+cr<-c() #Empty vector for recording cortex ratios
+fr<-c() #Empty vector for recording fragment number (n)
+criteria<-c() #Empty vector for recording cortex ratios
+perc<-c() #Empty vector for recording the selection percentages
+aug<-c() #Empty vector for recording whether the assemblage is added to or subtracted from
+
+for (m in select_percent){ #For each selection percentage
+  for (n in select_criteria){ #For each selection criteria
+    for (i in frag_nums){ #For each number of fragments
+      
+      for (j in c(1:100)){
+        data<-makeAssemblage(hrq_frag,assemblage_size,augment,m,n)
+        sy<-assemblageS(data,hrq_frag_s,i)
+        theo<-theo_nod(sy)
+        nod<-nod_char(data,hrq_cobbles)
+        sim<-append(sim,theo[1])
+        real<-append(real,nod[1])
+        cr<-append(cr,cortexratioS(data,sy))
+        fr<-append(fr,i)
+        perc<-append(perc,m)
+        aug<-append(aug,augment)
+        criteria<-append(criteria,select_criteria)
+      }
+    }
+  }
+}
+
+diffs<-sim/real
+v3<-tibble(aug,select_criteria,perc,fr,diffs,cr)
+
+#make plot
+theme_set(theme_bw())  # pre-set the bw theme.
+
+f3<-ggplot(v3, aes(x=diffs)) + 
+  geom_histogram(binwidth=.05, colour="black", fill="white") + 
+  facet_grid(factor(fr) ~ .) +
+  geom_vline(data=v3, aes(xintercept=1),linetype="dashed", size=1) +
+ labs(title="Heavily Reduced Quartz",x = "",y="") +
+  xlim(0,3) +
+  ylim(0,41) +
+  scale_y_continuous(breaks=c(0,20,40),labels=c("0", "20", "40"))+
+ theme(plot.title = element_text(hjust = 0.5,size=8))
+
+#png(filename="Num_Frag.png",width=6,height=3.5,units="in",res=300)
+grid.arrange(f2,f3,ncol=1,nrow=2,right="Number of Fragments",bottom="Curvature:Axial Radius",left="Frequency",heights=c(1,1))
+#dev.off()
+
+```
+
+
+##STEP 4: Assess effects of addition/removal on radius estimate and cortex ratio
+
+4A: Generate subtracted assemblages and compare LRQ assemblage radii to theoretical nodule radii and cortex ratio
+```{r}
+########REMOVAL##################
+frag_nums<-c(100) #number of fragments to use in comparison
+vals<-lrq_frag$CobbleID #all cobble IDs
+cobbles<-unique(lrq_frag_s$COBBLE_ID) #unique cobble ids
+counts<-as.numeric(table(vals)) #counts of each cobble in assemblage
+assemblage_size<-10000 #size of the initial 
+augment<-"remove"
+select_criteria<-c("none","length","cortical","surfvol","flake_only")
+select_percent<-c(0,0.25,0.5)
+
+sim<-c() #Empty vector for recording simulated theoretical nodule radii
+real<-c() #Empty vector for recording axial theoretical nodule radii
+cr<-c() #Empty vector for recording cortex ratios
+fr<-c() #Empty vector for recording fragment number (n)
+criteria<-c() #Empty vector for recording cortex ratios
+perc<-c() #Empty vector for recording the selection percentages
+aug<-c() #Empty vector for recording whether the assemblage is added to or subtracted from
+for (m in select_percent){ #For each selection percentage
+  for (n in select_criteria){ #For each selection criteria
+    for (i in frag_nums){ #For each number of fragments
+      
+      for (j in c(1:100)){
+        data<-makeAssemblage(lrq_frag,assemblage_size,augment,m,n)
+        sy<-assemblageS(data,lrq_frag_s,i)
+        theo<-theo_nod(sy)
+        nod<-nod_char(data,lrq_cobbles)
+        sim<-append(sim,theo[1])
+        real<-append(real,nod[1])
+        cr<-append(cr,cortexratioS(data,sy))
+        perc<-append(perc,m)
+        aug<-append(aug,augment)
+        fr<-append(fr,i)
+        criteria<-append(criteria,n)
+      }
+    }
+  }
+}
+perc<-perc*-1 #convert percentages to negative values for removal
+diffs<-sim/real
+ww<-tibble(aug,criteria,perc,fr,diffs,cr)
+
+######ADDITION#######
+
+frag_nums<-c(100) #number of fragments to use in comparison
+vals<-lrq_frag$CobbleID #all cobble IDs
+cobbles<-unique(lrq_frag_s$COBBLE_ID) #unique cobble ids
+counts<-as.numeric(table(vals)) #counts of each cobble in assemblage
+assemblage_size<-10000 #size of the initial 
+augment<-"add"
+select_criteria<-c("none","length","cortical","surfvol","flake_only")
+select_percent<-c(0.25,0.5)
+
+sim<-c() #Empty vector for recording simulated theoretical nodule radii
+real<-c() #Empty vector for recording axial theoretical nodule radii
+cr<-c() #Empty vector for recording cortex ratios
+fr<-c() #Empty vector for recording fragment number (n)
+criteria<-c() #Empty vector for recording cortex ratios
+perc<-c() #Empty vector for recording the selection percentages
+aug<-c() #Empty vector for recording whether the assemblage is added to or subtracted from
+for (m in select_percent){ #For each selection percentage
+  for (n in select_criteria){ #For each selection criteria
+    for (i in frag_nums){ #For each number of fragments
+      
+      for (j in c(1:100)){
+        data<-makeAssemblage(lrq_frag,assemblage_size,augment,m,n)
+        sy<-assemblageS(data,lrq_frag_s,i)
+        theo<-theo_nod(sy)
+        nod<-nod_char(data,lrq_cobbles)
+        sim<-append(sim,theo[1])
+        real<-append(real,nod[1])
+        cr<-append(cr,cortexratioS(data,sy))
+        perc<-append(perc,m)
+        aug<-append(aug,augment)
+        fr<-append(fr,i)
+        criteria<-append(criteria,n)
+      }
+    }
+  }
+}
+
+
+#######COMBINE RESULTST###########
+
+
+diffs<-sim/real
+vv<-tibble(aug,criteria,perc,fr,diffs,cr)
+
+v<-bind_rows(ww,vv)
+
+###MULTIPLOT####
+a <- filter(v,criteria=="none")
+theme_set(theme_bw())  # pre-set the bw theme.
+ch1m <- ggplot(a, aes(cr, diffs, shape = factor(perc), colour = factor(perc))) + 
+  geom_point() + 
+  geom_hline(yintercept = 1) +
+  theme(legend.position = "none") +
+  labs(title = "No Selection Criteria", x = "", y = "") +
+  theme(plot.title = element_text(hjust = 0.5,size=8))+
+   theme(plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm"))
+ 
+b <- filter(v,criteria=="flake_only")
+theme_set(theme_bw())  # pre-set the bw theme.
+ch2m <- ggplot(b, aes(cr, diffs, shape = factor(perc), colour = factor(perc))) + 
+  geom_point() + 
+  geom_hline(yintercept = 1) +
+  theme(legend.position = "none") +
+  labs(title = "Flakes Only", x = "", y = "") +
+  theme(plot.title = element_text(hjust = 0.5,size=8)) +
+   theme(plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm"))
+
+c <- filter(v,criteria=="surfvol")
+theme_set(theme_bw())  # pre-set the bw theme.
+ch3m <- ggplot(c, aes(cr, diffs, shape = factor(perc), colour = factor(perc))) + 
+  geom_point() + 
+  geom_hline(yintercept = 1) +
+  theme(legend.position = "none") +
+  labs(title = "Surface-to-Volume Ratio", x = "", y = "") +
+  theme(plot.title = element_text(hjust = 0.5,size=8)) +
+   theme(plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm"))
+ 
+
+d <- filter(v,criteria=="cortical")
+theme_set(theme_bw()) # pre-set the bw theme.
+ch4m <- ggplot(d, aes(cr, diffs, shape = factor(perc), colour = factor(perc))) + 
+  geom_point() + 
+  geom_hline(yintercept = 1) +
+  theme(legend.position = "none") +
+  labs(title = "Cortical Surface Area", x = "", y = "") +
+ theme(plot.title = element_text(hjust = 0.5,size=8)) +
+  theme(plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm"))
+
+blankPlot <- ggplot()+geom_blank(aes(1,1)) + 
+  cowplot::theme_nothing()
+
+leg<-get_legend(ch1)
+lay<-rbind(c(1,1),c(2,3),c(4,5))
+
+#png(filename="LRQ_CR.png",width=6,height=5,units="in",res=300)
+grid.arrange(leg,ch1m,ch2m,ch3m,ch4m,layout_matrix=lay,heights=c(0.75,3,3),widths=c(4,4),bottom="Cortex Ratio",left="Curvature:Axial Radius      ")
+#dev.off()
+```
+
+
+4B: Generate subtracted assemblages and compare HRQ assemblage radii to theoretical nodule radii and cortex ratio
+```{r}
+########REMOVAL##################
+frag_nums<-c(100) #number of fragments to use in comparison
+vals<-hrq_frag$CobbleID #all cobble IDs
+cobbles<-unique(hrq_frag_s$COBBLE_ID) #unique cobble ids
+counts<-as.numeric(table(vals)) #counts of each cobble in assemblage
+assemblage_size<-10000 #size of the initial 
+augment<-"remove"
+select_criteria<-c("none","length","cortical","surfvol","flake_only")
+select_percent<-c(0,0.25,0.5)
+
+sim<-c() #Empty vector for recording simulated theoretical nodule radii
+real<-c() #Empty vector for recording axial theoretical nodule radii
+cr<-c() #Empty vector for recording cortex ratios
+fr<-c() #Empty vector for recording fragment number (n)
+criteria<-c() #Empty vector for recording cortex ratios
+perc<-c() #Empty vector for recording the selection percentages
+aug<-c() #Empty vector for recording whether the assemblage is added to or subtracted from
+for (m in select_percent){ #For each selection percentage
+  for (n in select_criteria){ #For each selection criteria
+    for (i in frag_nums){ #For each number of fragments
+      
+      for (j in c(1:100)){
+        data<-makeAssemblage(hrq_frag,assemblage_size,augment,m,n)
+        sy<-assemblageS(data,hrq_frag_s,i)
+        theo<-theo_nod(sy)
+        nod<-nod_char(data,hrq_cobbles)
+        sim<-append(sim,theo[1])
+        real<-append(real,nod[1])
+        cr<-append(cr,cortexratioS(data,sy))
+        perc<-append(perc,m)
+        aug<-append(aug,augment)
+        fr<-append(fr,i)
+        criteria<-append(criteria,n)
+      }
+    }
+  }
+}
+perc<-perc*-1 #convert percentages to negative values for removal
+diffs<-sim/real
+ww<-tibble(aug,criteria,perc,fr,diffs,cr)
+
+######ADDITION#######
+
+frag_nums<-c(100) #number of fragments to use in comparison
+vals<-hrq_frag$CobbleID #all cobble IDs
+cobbles<-unique(hrq_frag_s$COBBLE_ID) #unique cobble ids
+counts<-as.numeric(table(vals)) #counts of each cobble in assemblage
+assemblage_size<-10000 #size of the initial 
+augment<-"add"
+select_criteria<-c("none","length","cortical","surfvol","flake_only")
+select_percent<-c(0.25,0.5)
+
+sim<-c() #Empty vector for recording simulated theoretical nodule radii
+real<-c() #Empty vector for recording axial theoretical nodule radii
+cr<-c() #Empty vector for recording cortex ratios
+fr<-c() #Empty vector for recording fragment number (n)
+criteria<-c() #Empty vector for recording cortex ratios
+perc<-c() #Empty vector for recording the selection percentages
+aug<-c() #Empty vector for recording whether the assemblage is added to or subtracted from
+for (m in select_percent){ #For each selection percentage
+  for (n in select_criteria){ #For each selection criteria
+    for (i in frag_nums){ #For each number of fragments
+      
+      for (j in c(1:100)){
+        data<-makeAssemblage(hrq_frag,assemblage_size,augment,m,n)
+        sy<-assemblageS(data,hrq_frag_s,i)
+        theo<-theo_nod(sy)
+        nod<-nod_char(data,hrq_cobbles)
+        sim<-append(sim,theo[1])
+        real<-append(real,nod[1])
+        cr<-append(cr,cortexratioS(data,sy))
+        perc<-append(perc,m)
+        aug<-append(aug,augment)
+        fr<-append(fr,i)
+        criteria<-append(criteria,n)
+      }
+    }
+  }
+}
+
+
+#######COMBINE RESULTS###########
+diffs<-sim/real
+vv<-tibble(aug,criteria,perc,fr,diffs,cr)
+
+v<-bind_rows(ww,vv)
+
+
+###MULTIPLOT####
+a <- filter(v,criteria=="none")
+theme_set(theme_bw())  # pre-set the bw theme.
+ch1m <- ggplot(a, aes(cr, diffs, shape = factor(perc), colour = factor(perc))) + 
+  geom_point() + 
+  geom_hline(yintercept = 1) +
+  theme(legend.position = "none") +
+  labs(title = "No Selection Criteria", x = "", y = "") +
+  theme(plot.title = element_text(hjust = 0.5,size=8))+
+   theme(plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm"))
+ 
+b <- filter(v,criteria=="flake_only")
+theme_set(theme_bw())  # pre-set the bw theme.
+ch2m <- ggplot(b, aes(cr, diffs, shape = factor(perc), colour = factor(perc))) + 
+  geom_point() + 
+  geom_hline(yintercept = 1) +
+  theme(legend.position = "none") +
+  labs(title = "Flakes Only", x = "", y = "") +
+  theme(plot.title = element_text(hjust = 0.5,size=8)) +
+   theme(plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm"))
+
+c <- filter(v,criteria=="surfvol")
+theme_set(theme_bw())  # pre-set the bw theme.
+ch3m <- ggplot(c, aes(cr, diffs, shape = factor(perc), colour = factor(perc))) + 
+  geom_point() + 
+  geom_hline(yintercept = 1) +
+  theme(legend.position = "none") +
+  labs(title = "Surface-to-Volume Ratio", x = "", y = "") +
+  theme(plot.title = element_text(hjust = 0.5,size=8)) +
+   theme(plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm"))
+ 
+
+d <- filter(v,criteria=="cortical")
+theme_set(theme_bw()) # pre-set the bw theme.
+ch4m <- ggplot(d, aes(cr, diffs, shape = factor(perc), colour = factor(perc))) + 
+  geom_point() + 
+  geom_hline(yintercept = 1) +
+  theme(legend.position = "none") +
+  labs(title = "Cortical Surface Area", x = "", y = "") +
+ theme(plot.title = element_text(hjust = 0.5,size=8)) +
+  theme(plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm"))
+
+blankPlot <- ggplot()+geom_blank(aes(1,1)) + 
+  cowplot::theme_nothing()
+
+leg<-get_legend(ch1)
+lay<-rbind(c(1,1),c(2,3),c(4,5))
+
+#png(filename="HRQ_CR.png",width=6,height=5,units="in",res=300)
+grid.arrange(leg,ch1m,ch2m,ch3m,ch4m,layout_matrix=lay,heights=c(0.75,3,3),widths=c(4,4),bottom="Cortex Ratio",left="Curvature:Axial Radius      ")
+#dev.off()
+```
