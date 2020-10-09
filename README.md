@@ -28,4 +28,5 @@ In section 4B:
 grid.arrange(leg,ch1m,ch2m,ch3m,ch4m,layout_matrix=lay,heights=c(0.75,3,3),widths=c(4,4),bottom="Cortex Ratio",left="Curvature:Axial Radius      ")
 #dev.off()
 
-
+---
+Copyright (c) 2020 Ben Davies and Matt Douglass
