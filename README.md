@@ -30,3 +30,4 @@ grid.arrange(leg,ch1m,ch2m,ch3m,ch4m,layout_matrix=lay,heights=c(0.75,3,3),width
 
 ---
 Copyright (c) 2020 Ben Davies and Matt Douglass
+Updated 5 May 2021 - minor commenting changes

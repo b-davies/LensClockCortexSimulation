@@ -11,6 +11,7 @@ output:
 ##Step 1: Load packages and data
 1A: Load packages
 ```{r}
+#Load necessary packages
 require(tidyverse)
 require(ggExtra)
 require(gridExtra)
